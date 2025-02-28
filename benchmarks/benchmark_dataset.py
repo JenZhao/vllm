@@ -9,11 +9,7 @@ Supported dataset types include:
   - ShareGPT
   - Random (synthetic)
   - Sonnet
-
-Usage:
-    from benchmark_dataset import get_dataset_instance
-    dataset_instance = get_dataset_instance(args.dataset_type, tokenizer, args)
-    samples = dataset_instance.sample()
+  - BurstGPT
 """
 
 import json
@@ -24,6 +20,7 @@ from functools import cache
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 from PIL import Image
 from transformers import PreTrainedTokenizerBase
 
@@ -76,9 +73,10 @@ class BenchmarkDataset(ABC):
                  input_len: Optional[int] = None,
                  output_len: Optional[int] = None,
                  dataset_path: Optional[str] = None,
-                 model: Optional[str] = None) -> None:
+                 model: Optional[str] = None,
+                 data: Optional[List] = None) -> None:
         self.tokenizer = tokenizer
-        self.data = None  # For datasets that require pre-loading
+        self.data = data  # For datasets that require pre-loading
         self.dataset_path = dataset_path
 
         # lora related
@@ -96,6 +94,12 @@ class BenchmarkDataset(ABC):
 
         if self.enable_lora_tokenizer and not self.lora_path:
             raise ValueError("LoRA is enabled but no lora_path provided.")
+
+    @abstractmethod
+    def load_data(self) -> None:
+        """Load data from the specified dataset path."""
+        raise NotImplementedError(
+            "load_data must be implemented in subclasses.")
 
     def get_random_lora_request(
             self) -> Tuple[Optional[LoRARequest], AnyTokenizer]:
@@ -152,6 +156,10 @@ class RandomDataset(BenchmarkDataset):
         self.prefix_len = prefix_len
         self.range_ratio = range_ratio
 
+    def load_data(self) -> None:
+        # No data loading needed for RandomDataset.
+        pass
+
     def sample_serving(self) -> List:
         assert self.range_ratio is not None \
          and self.prefix_len is not None, \
@@ -192,16 +200,16 @@ class RandomDataset(BenchmarkDataset):
         vocab_size = self.tokenizer.vocab_size
         requests = []
         for _ in range(self.num_requests):
-            lora_request, request_tokenizer = self.get_random_lora_request()
+            lora_request, tokenizer = self.get_random_lora_request()
 
             candidate_ids = [
                 random.randint(0, vocab_size - 1)
                 for _ in range(self.input_len)
             ]
-            candidate_prompt = request_tokenizer.decode(candidate_ids)
+            candidate_prompt = tokenizer.decode(candidate_ids)
 
             for _ in range(5):
-                tokenized_len = len(request_tokenizer.encode(candidate_prompt))
+                tokenized_len = len(tokenizer.encode(candidate_prompt))
                 if tokenized_len == self.input_len:
                     break
                 diff = self.input_len - tokenized_len
@@ -212,7 +220,7 @@ class RandomDataset(BenchmarkDataset):
                     ]
                 else:
                     candidate_ids = candidate_ids[:diff]
-                candidate_prompt = request_tokenizer.decode(candidate_ids)
+                candidate_prompt = tokenizer.decode(candidate_ids)
 
             requests.append(
                 SampleRequest(prompt=candidate_prompt,
@@ -233,6 +241,11 @@ class ShareGPTDataset(BenchmarkDataset):
     Loads data from a JSON file and generates sample requests 
     based on conversation turns.
     """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        if self.data is None:
+            self.load_data()
 
     def _get_prompt_for_image_model(self, question: str) -> str:
         """Prepend and append special tokens around the question
@@ -256,8 +269,6 @@ class ShareGPTDataset(BenchmarkDataset):
         random.shuffle(self.data)
 
     def sample(self, return_tuple=False) -> List:
-        if self.data is None:
-            self.load_data()
 
         if self.num_requests is None:
             raise ValueError("num_requests must be provided for sampling.")
@@ -284,9 +295,9 @@ class ShareGPTDataset(BenchmarkDataset):
                     continue
                 prompt = self._get_prompt_for_image_model(prompt)
 
-            lora_request, tok = self.get_random_lora_request()
-            prompt_ids = tok(prompt).input_ids
-            completion_ids = tok(completion).input_ids
+            lora_request, tokenizer = self.get_random_lora_request()
+            prompt_ids = tokenizer(prompt).input_ids
+            completion_ids = tokenizer(completion).input_ids
             prompt_len = len(prompt_ids)
             output_len = len(
                 completion_ids) if self.output_len is None else self.output_len
@@ -306,78 +317,139 @@ class ShareGPTDataset(BenchmarkDataset):
         return samples
 
 
-class SonnetDataset(BenchmarkDataset):
+# -----------------------------------------------------------------------------
+# Sonnet Dataset Implementation
+# -----------------------------------------------------------------------------
 
-    def __init__(self, prefix_len: int = 0, **kwargs) -> None:
+
+class SonnetDataset(BenchmarkDataset):
+    """
+    Simplified implementation of the Sonnet dataset.
+    Loads poem lines from a text file and generates sample requests.
+    """
+
+    def __init__(self, prefix_len: int = 200, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.prefix_len = prefix_len
-        assert self.input_len is not None and self.prefix_len is not None, (
-            "input_len and prefix_len must be set for SonnetDataset")
-        assert self.input_len > self.prefix_len, (
-            "'input_len' must be greater than 'prefix_len'.")
-        self.load_data()
+        self.prefix_len = prefix_len or 200
+        self.input_len = self.input_len or 550
+        self.output_len = self.output_len or 150
+        if self.input_len <= self.prefix_len:
+            raise ValueError("'input_len' must be greater than 'prefix_len'")
+        if self.enable_lora_tokenizer:
+            raise NotImplementedError
+        if self.data is None:
+            self.load_data()
 
     def load_data(self) -> None:
-        if self.dataset_path is None:
-            raise ValueError("dataset_path must be provided for loading data.")
-
+        if not self.dataset_path:
+            raise ValueError("dataset_path must be provided.")
         with open(self.dataset_path, encoding="utf-8") as f:
             self.data = f.readlines()
 
     def sample(self,
-               return_tuple=False,
-               return_prompt_formatted=False) -> List:
-        if not return_tuple:
-            raise ValueError(
-                "SonnetDataset only supports returning tuple for now.")
-        # Tokenize the poem lines.
-        poem_token_ids = self.tokenizer(self.data).input_ids
-        average_poem_len = sum(
-            len(token_ids)
-            for token_ids in poem_token_ids) / len(poem_token_ids)
+               return_tuple: bool = False,
+               return_prompt_formatted: bool = False) -> List:
+        # Calculate average token length for a poem line.
+        tokenized_lines = [
+            self.tokenizer(line).input_ids for line in self.data
+        ]
+        avg_len = sum(len(tokens)
+                      for tokens in tokenized_lines) / len(tokenized_lines)
 
-        # Base prompt for all requests.
+        # Build the base prompt.
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
-        base_message = [{"role": "user", "content": base_prompt}]
-        base_prompt_formatted = self.tokenizer.apply_chat_template(
-            base_message, add_generation_prompt=True, tokenize=False)
-        base_prompt_offset = len(
-            self.tokenizer(base_prompt_formatted).input_ids)
+        base_msg = [{"role": "user", "content": base_prompt}]
+        base_fmt = self.tokenizer.apply_chat_template(
+            base_msg, add_generation_prompt=True, tokenize=False)
+        base_offset = len(self.tokenizer(base_fmt).input_ids)
+        if self.input_len <= base_offset:
+            raise ValueError(f"'input_len' must be higher than the \
+                base prompt length ({base_offset}).")
 
-        # Check that the input length can accommodate the base prompt.
-        assert self.input_len > base_prompt_offset, (
-            f"Please set 'input_len' higher than {base_prompt_offset}.")
-
-        # Determine how many poem lines fit in the input after the base prompt.
-        num_input_lines = round(
-            (self.input_len - base_prompt_offset) / average_poem_len)
-
-        # Determine how many fixed prefix lines to include.
-        assert self.prefix_len > base_prompt_offset, (
-            f"Please set 'prefix_len' higher than {base_prompt_offset}.")
-        num_prefix_lines = round(
-            (self.prefix_len - base_prompt_offset) / average_poem_len)
+        # Determine how many poem lines to use.
+        num_input_lines = round((self.input_len - base_offset) / avg_len)
+        num_prefix_lines = round((self.prefix_len - base_offset) / avg_len)
         prefix_lines = self.data[:num_prefix_lines]
 
-        # Sample requests.
-        sampled_requests: List[Tuple[str, str, int, int, None]] = []
+        samples = []
         for _ in range(self.num_requests):
-            num_lines_needed = num_input_lines - num_prefix_lines
-            # Randomly choose additional poem lines.
-            sampled_lines = "".join(
-                prefix_lines + random.choices(self.data, k=num_lines_needed))
-            prompt = f"{base_prompt}{sampled_lines}"
-
-            message = [{"role": "user", "content": prompt}]
+            extra_lines = random.choices(self.data,
+                                         k=num_input_lines - num_prefix_lines)
+            prompt = f"{base_prompt}{''.join(prefix_lines + extra_lines)}"
+            msg = [{"role": "user", "content": prompt}]
             if return_prompt_formatted:
-                prompt_formatted = self.tokenizer.apply_chat_template(
-                    message, add_generation_prompt=True, tokenize=False)
-                prompt_len = len(self.tokenizer(prompt_formatted).input_ids)
-                sampled_requests.append(
-                    (prompt_formatted, prompt_len, self.output_len, None))
+                prompt = self.tokenizer.apply_chat_template(
+                    msg, add_generation_prompt=True, tokenize=False)
+            prompt_len = len(self.tokenizer(prompt).input_ids)
+            if return_tuple:
+                samples.append((prompt, prompt_len, self.output_len, None))
             else:
-                prompt_len = len(self.tokenizer(prompt).input_ids)
-                sampled_requests.append(
-                    (prompt, prompt_len, self.output_len, None))
+                samples.append(
+                    SampleRequest(prompt=prompt,
+                                  prompt_len=prompt_len,
+                                  expected_output_len=self.output_len))
+        return samples
 
-        return sampled_requests
+
+# -----------------------------------------------------------------------------
+# BurstGPT Dataset Implementation
+# -----------------------------------------------------------------------------
+
+
+class BurstGPTDataset(BenchmarkDataset):
+    """
+    Implements the BurstGPT dataset.
+    Loads data from a CSV file and generates sample 
+    requests based on synthetic prompt generation.
+    Only rows with Model "GPT-4" and positive response tokens are used.
+    """
+
+    def __init__(self, random_seed: int = 0, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.random_seed = random_seed
+        if self.data is None:
+            self.load_data()
+
+    def load_data(self):
+        if self.dataset_path is None:
+            raise ValueError("dataset_path must be provided for loading data.")
+
+        df = pd.read_csv(self.dataset_path)
+        # Filter to keep only GPT-4 rows.
+        gpt4_df = df[df["Model"] == "GPT-4"]
+        # Remove failed requests (where Response tokens is 0 or less).
+        gpt4_df = gpt4_df[gpt4_df["Response tokens"] > 0]
+        # Sample the desired number of rows.
+        if self.num_requests <= len(gpt4_df):
+            gpt4_df = gpt4_df.sample(n=self.num_requests,
+                                     random_state=self.random_seed)
+        else:
+            gpt4_df = gpt4_df.sample(n=self.num_requests,
+                                     random_state=self.random_seed,
+                                     replace=True)
+        # Convert the dataframe to a list of lists.
+        self.data = gpt4_df.values.tolist()
+
+    def sample(self, return_tuple: bool = False) -> List:
+        samples = []
+        for i in range(self.num_requests):
+            input_len = int(self.data[i][2])
+            output_len = int(self.data[i][3])
+            # Use the LoRA-specific tokenizer if enabled.
+            lora_req, tokenizer = self.get_random_lora_request()
+            # Generate a synthetic prompt:
+            # a list of token IDs computed as (i + j) modulo vocab_size.
+            token_ids = [(i + j) % tokenizer.vocab_size
+                         for j in range(input_len)]
+            prompt = tokenizer.decode(token_ids)
+
+            if return_tuple:
+                samples.append((prompt, input_len, output_len, None))
+            else:
+                samples.append(
+                    SampleRequest(prompt=prompt,
+                                  prompt_len=input_len,
+                                  expected_output_len=output_len,
+                                  multi_modal_data=None,
+                                  lora_request=lora_req))
+        return samples

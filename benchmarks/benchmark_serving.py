@@ -38,7 +38,6 @@ from datetime import datetime
 from typing import Any, AsyncGenerator, Collection, Dict, List, Optional, Tuple
 
 import numpy as np
-import pandas as pd
 from backend_request_func import (ASYNC_REQUEST_FUNCS, RequestFuncInput,
                                   RequestFuncOutput)
 from datasets import load_dataset
@@ -56,7 +55,8 @@ try:
 except ImportError:
     from argparse import ArgumentParser as FlexibleArgumentParser
 
-from benchmark_dataset import RandomDataset, ShareGPTDataset, SonnetDataset
+from benchmark_dataset import (BurstGPTDataset, RandomDataset, ShareGPTDataset,
+                               SonnetDataset)
 from benchmark_utils import convert_to_pytorch_benchmark_format, write_to_json
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
@@ -90,148 +90,6 @@ class BenchmarkMetrics:
     median_e2el_ms: float
     std_e2el_ms: float
     percentiles_e2el_ms: List[Tuple[float, float]]
-
-
-def sample_sharegpt_requests(
-    dataset_path: str,
-    num_requests: int,
-    tokenizer: PreTrainedTokenizerBase,
-    fixed_output_len: Optional[int] = None,
-) -> List[Tuple[str, int, int, None]]:
-    # Load the dataset.
-    with open(dataset_path, encoding='utf-8') as f:
-        dataset = json.load(f)
-    # Filter out the conversations with less than 2 turns.
-    dataset = [data for data in dataset if len(data["conversations"]) >= 2]
-    # Only keep the first two turns of each conversation.
-    dataset = [(data["conversations"][0]["value"],
-                data["conversations"][1]["value"]) for data in dataset]
-
-    # Shuffle the dataset.
-    random.shuffle(dataset)
-
-    # Filter out sequences that are too long or too short
-    filtered_dataset: List[Tuple[str, int, int]] = []
-    for i in range(len(dataset)):
-        if len(filtered_dataset) == num_requests:
-            break
-
-        # Tokenize the prompts and completions.
-        prompt = dataset[i][0]
-        prompt_token_ids = tokenizer(prompt).input_ids
-        completion = dataset[i][1]
-        completion_token_ids = tokenizer(completion).input_ids
-        prompt_len = len(prompt_token_ids)
-        output_len = len(completion_token_ids
-                         ) if fixed_output_len is None else fixed_output_len
-        if prompt_len < 4 or (fixed_output_len is None and output_len < 4):
-            # Prune too short sequences.
-            continue
-        if prompt_len > 1024 or prompt_len + output_len > 2048:
-            # Prune too long sequences.
-            continue
-        filtered_dataset.append((prompt, prompt_len, output_len, None))
-
-    return filtered_dataset
-
-
-def sample_burstgpt_requests(
-    dataset_path: str,
-    num_requests: int,
-    random_seed: int,
-    tokenizer: PreTrainedTokenizerBase,
-) -> List[Tuple[str, int, int, None]]:
-    df = pd.read_csv(dataset_path)
-    gpt4_df = df[df["Model"] == "GPT-4"]
-    # Remove the failed requests (i.e., response length is 0)
-    gpt4_df = gpt4_df[gpt4_df["Response tokens"] > 0]
-    # Randomly sample num_requests from the dataset
-    if num_requests <= len(gpt4_df):
-        gpt4_df = gpt4_df.sample(n=num_requests, random_state=random_seed)
-    else:
-        gpt4_df = gpt4_df.sample(n=num_requests,
-                                 random_state=random_seed,
-                                 replace=True)
-    # Convert the dataframe to a list of tuples
-    dataset = gpt4_df.values.tolist()
-    input_requests = []
-    for i in range(num_requests):
-        input_len = int(dataset[i][2])
-        output_len = int(dataset[i][3])
-        prompt = tokenizer.decode([(i + j) % tokenizer.vocab_size
-                                   for j in range(input_len)])
-        input_requests.append((prompt, input_len, output_len, None))
-    return input_requests
-
-
-def sample_sonnet_requests(
-    dataset_path: str,
-    num_requests: int,
-    input_len: int,
-    output_len: int,
-    prefix_len: int,
-    tokenizer: PreTrainedTokenizerBase,
-) -> List[Tuple[str, str, int, int, None]]:
-    assert (
-        input_len > prefix_len
-    ), "'args.sonnet-input-len' must be greater than 'args.prefix-input-len'."
-
-    # Load the dataset.
-    with open(dataset_path, encoding='utf-8') as f:
-        poem_lines = f.readlines()
-
-    # Tokenize the poem lines.
-    poem_token_ids = tokenizer(poem_lines).input_ids
-    average_poem_len = sum(
-        len(token_ids) for token_ids in poem_token_ids) / len(poem_token_ids)
-
-    # Base prefix for all requests.
-    base_prompt = "Pick as many lines as you can from these poem lines:\n"
-    base_message = [{
-        "role": "user",
-        "content": base_prompt,
-    }]
-    base_prompt_formatted = tokenizer.apply_chat_template(
-        base_message, add_generation_prompt=True, tokenize=False)
-    base_prompt_offset = len(tokenizer(base_prompt_formatted).input_ids)
-
-    assert (
-        input_len > base_prompt_offset
-    ), f"Please set 'args.sonnet-input-len' higher than {base_prompt_offset}."
-    num_input_lines = round(
-        (input_len - base_prompt_offset) / average_poem_len)
-
-    # First approximately `prefix_len` number of tokens in the
-    # prompt are fixed poem lines.
-    assert (
-        prefix_len > base_prompt_offset
-    ), f"Please set 'args.sonnet-prefix-len' higher than {base_prompt_offset}."
-
-    num_prefix_lines = round(
-        (prefix_len - base_prompt_offset) / average_poem_len)
-    prefix_lines = poem_lines[:num_prefix_lines]
-
-    # Sample the rest of lines per request.
-    sampled_requests: List[Tuple[str, int, int]] = []
-    for _ in range(num_requests):
-        num_lines_needed = num_input_lines - num_prefix_lines
-        sampled_lines = "".join(prefix_lines +
-                                random.choices(poem_lines, k=num_lines_needed))
-
-        prompt = f"{base_prompt}{sampled_lines}"
-        message = [
-            {
-                "role": "user",
-                "content": prompt,
-            },
-        ]
-        prompt_formatted = tokenizer.apply_chat_template(
-            message, add_generation_prompt=True, tokenize=False)
-        prompt_len = len(tokenizer(prompt_formatted).input_ids)
-        sampled_requests.append(
-            (prompt, prompt_formatted, prompt_len, output_len, None))
-
-    return sampled_requests
 
 
 def sample_vision_arena_requests(
@@ -880,12 +738,11 @@ def main(args: argparse.Namespace):
             dataset_path=args.dataset_path).sample(return_tuple=True)
 
     elif args.dataset_name == "burstgpt":
-        input_requests = sample_burstgpt_requests(
-            dataset_path=args.dataset_path,
+        input_requests = BurstGPTDataset(
+            tokenizer=tokenizer,
             num_requests=args.num_prompts,
             random_seed=args.seed,
-            tokenizer=tokenizer,
-        )
+            dataset_path=args.dataset_path).sample(return_tuple=True)
 
     elif args.dataset_name == "sonnet":
         # Do not format the prompt, pass to message directly
