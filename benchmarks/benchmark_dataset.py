@@ -570,7 +570,7 @@ class HuggingFaceDataset(BenchmarkDataset):
                tokenizer: PreTrainedTokenizerBase,
                num_requests: int,
                output_len: Optional[int] = None,
-               enable_chat: bool = False,
+               enable_multimodal_chat: bool = False,
                **kwargs) -> list:
         sampled_requests = []
         dynamic_output = output_len is None
@@ -592,7 +592,7 @@ class HuggingFaceDataset(BenchmarkDataset):
                 continue
             mm_content = process_image(
                 item["image"]) if "image" in item else None
-            if enable_chat:
+            if enable_multimodal_chat:
                 # Note: when chat is enabled the request prompt_len is no longer
                 # accurate and we will be using request output to count the
                 # actual prompt len and output len
@@ -647,7 +647,7 @@ class VisionArenaDataset(HuggingFaceDataset):
                tokenizer: PreTrainedTokenizerBase,
                num_requests: int,
                output_len: Optional[int] = DEFAULT_OUTPUT_LEN,
-               enable_chat: bool = False,
+               enable_multimodal_chat: bool = False,
                **kwargs) -> list:
         output_len = (output_len
                       if output_len is not None else self.DEFAULT_OUTPUT_LEN)
@@ -658,7 +658,7 @@ class VisionArenaDataset(HuggingFaceDataset):
             prompt = item["turns"][0][0]["content"]
             mm_content = process_image(item["images"][0])
             prompt_len = len(tokenizer(prompt).input_ids)
-            if enable_chat:
+            if enable_multimodal_chat:
                 # Note: when chat is enabled the request prompt_len is no longer
                 # accurate and we will be using request output to count the
                 # actual prompt len

@@ -319,7 +319,7 @@ def get_requests(args, tokenizer):
                        and args.hf_subset is None else HuggingFaceDataset)
         common_kwargs['dataset_subset'] = args.hf_subset
         common_kwargs['dataset_split'] = args.hf_split
-        sample_kwargs["enable_chat"] = True
+        sample_kwargs["enable_multimodal_chat"] = True
 
     else:
         raise ValueError(f"Unknown dataset name: {args.dataset_name}")
