@@ -84,6 +84,20 @@ class BenchmarkDataset(ABC):
                             if random_seed is not None else self.DEFAULT_SEED)
         self.data = None
 
+    def apply_multimodal_chat_transformation(
+            self,
+            prompt: str,
+            mm_content: Optional[MultiModalDataDict] = None) -> list[dict]:
+        """
+        Transform a prompt and optional multimodal content into a chat format.
+        This method is used for chat models that expect a specific 
+        conversation format.
+        """
+        content = [{"text": prompt, "type": "text"}]
+        if mm_content is not None:
+            content.append(mm_content)
+        return [{"role": "user", "content": content}]
+
     def load_data(self) -> None:
         """
         Load data from the dataset path into self.data.
@@ -338,6 +352,7 @@ class ShareGPTDataset(BenchmarkDataset):
                lora_path: Optional[str] = None,
                max_loras: Optional[int] = None,
                output_len: Optional[int] = None,
+               enable_multimodal_chat: bool = False,
                **kwargs) -> list:
         samples: list = []
         for entry in self.data:
@@ -358,6 +373,9 @@ class ShareGPTDataset(BenchmarkDataset):
                                      skip_min_output_len_check=output_len
                                      is not None):
                 continue
+            if enable_multimodal_chat:
+                prompt = self.apply_multimodal_chat_transformation(
+                    prompt, None)
             samples.append(
                 SampleRequest(
                     prompt=prompt,
@@ -561,11 +579,6 @@ class HuggingFaceDataset(BenchmarkDataset):
         self.data = self.data.shuffle(seed=self.random_seed).filter(
             lambda x: len(x["conversations"]) >= 2)
 
-    def apply_chat_transformation(self, prompt: str, mm_content):
-        textpart = {"text": prompt, "type": "text"}
-        conversations = [{"role": "user", "content": [textpart, mm_content]}]
-        return conversations
-
     def sample(self,
                tokenizer: PreTrainedTokenizerBase,
                num_requests: int,
@@ -596,7 +609,8 @@ class HuggingFaceDataset(BenchmarkDataset):
                 # Note: when chat is enabled the request prompt_len is no longer
                 # accurate and we will be using request output to count the
                 # actual prompt len and output len
-                prompt = self.apply_chat_transformation(prompt, mm_content)
+                prompt = self.apply_multimodal_chat_transformation(
+                    prompt, mm_content)
             sampled_requests.append(
                 SampleRequest(
                     prompt=prompt,
@@ -662,7 +676,8 @@ class VisionArenaDataset(HuggingFaceDataset):
                 # Note: when chat is enabled the request prompt_len is no longer
                 # accurate and we will be using request output to count the
                 # actual prompt len
-                prompt = self.apply_chat_transformation(prompt, mm_content)
+                prompt = self.apply_multimodal_chat_transformation(
+                    prompt, mm_content)
             sampled_requests.append(
                 SampleRequest(
                     prompt=prompt,

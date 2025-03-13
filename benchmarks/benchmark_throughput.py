@@ -128,8 +128,17 @@ def run_vllm_chat(
                 max_tokens=request.expected_output_len,
                 detokenize=not disable_detokenize,
             ))
+
+    # Extract LoRA requests if enabled
+    lora_requests: Optional[list[LoRARequest]] = None
+    if engine_args.enable_lora:
+        lora_requests = [request.lora_request for request in requests]
+
     start = time.perf_counter()
-    outputs = llm.chat(prompts, sampling_params, use_tqdm=True)
+    outputs = llm.chat(prompts,
+                       sampling_params,
+                       lora_request=lora_requests,
+                       use_tqdm=True)
     end = time.perf_counter()
     return end - start, outputs
 
@@ -306,6 +315,8 @@ def get_requests(args, tokenizer):
         dataset_cls = RandomDataset
     elif args.dataset_name == "sharegpt":
         dataset_cls = ShareGPTDataset
+        if args.backend == "vllm-chat":
+            sample_kwargs["enable_multimodal_chat"] = True
     elif args.dataset_name == "sonnet":
         assert tokenizer.chat_template or tokenizer.default_chat_template, (
             "Tokenizer/model must have chat template for sonnet dataset.")
