@@ -100,6 +100,11 @@ def run_vllm_chat(
         n: int,
         engine_args: EngineArgs,
         disable_detokenize: bool = False) -> tuple[float, list[RequestOutput]]:
+    """
+    Run vLLM chat benchmark. This function is recommended ONLY for benchmarking
+    multimodal models as it properly handles multimodal inputs and chat
+    formatting. For non-multimodal models, use run_vllm() instead.
+    """
     from vllm import LLM, SamplingParams
     llm = LLM(**dataclasses.asdict(engine_args))
 
@@ -380,6 +385,11 @@ def main(args: argparse.Namespace):
             total_output_tokens += sum(
                 len(o.token_ids) for o in ro.outputs if o)
         total_num_tokens = total_prompt_tokens + total_output_tokens
+        print(
+            "\033[93mWARNING\033[0m: Token calculation is different when using "
+            "request_outputs. Both prompt tokens and output tokens are based "
+            "on the model's actual output rather than the expected lengths "
+            "from the dataset.")
     else:
         total_num_tokens = sum(r.prompt_len + r.expected_output_len
                                for r in requests)
