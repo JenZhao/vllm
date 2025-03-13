@@ -20,7 +20,35 @@ Specifically, V1 aims to:
 For more details, check out the vLLM V1 blog post [vLLM V1: A Major
 Upgrade to vLLM’s Core Architecture](https://blog.vllm.ai/2025/01/27/v1-alpha-release.html) (published Jan 27, 2025).
 
-This living user guide outlines a few known **important changes and limitations** introduced by vLLM V1. The team has been working actively to bring V1 as the default engine version of vLLM, therefore this guide will be updated constantly as more feature get supported on vLLM V1.
+This living user guide outlines a few known **important changes and limitations** introduced by vLLM V1. The team has been working actively to bring V1 as the default engine, therefore this guide will be updated constantly as more features get supported on vLLM V1.
+
+### Feature / Model Supports Overview
+
+| **Feature / Model**                         | **Status**    | **Notes**                                                      | **PR/RFC**                                                       |
+|---------------------------------------------|---------------|----------------------------------------------------------------|--------------------------------------------------------------|
+| **Logprobs Calculation**                    | ⚙️ Functional | Returns raw logprobs; post-sampling adjustments WIP.           | –                                                            |
+| **Prompt Logprobs with Prefix Caching**     | 📝 Planned    | Computes prompt logprobs without caching; caching to be added. | [RFC #13414](https://github.com/vllm-project/vllm/issues/13414) |
+| **LoRA**                                    | ⚙️ Functional | Working; tuning needed.                                        | [PR #13096](https://github.com/vllm-project/vllm/pull/13096)    |
+| **Spec Decode**                             | ⚙️ Functional | Ngram-based; more support coming.                              | [PR #13933](https://github.com/vllm-project/vllm/pull/13933)    |
+| **FP8 KV Cache**                            | 📆 Planning   | FP8 kernels exist; KV cache integration pending.               | –                                                            |
+| **Structured Generation Fallback**          | 🚫 Deprecated | Supports only `xgrammar:no_fallback`.                          | –                                                            |
+| **best_of**                                  | 🚫 Deprecated | Deprecated due to limited use.                                 | [RFC #13361](https://github.com/vllm-project/vllm/issues/13361) |
+| **Per-Request Logits Processors**            | 🚫 Deprecated | Deprecated; global processors will be used instead.            | [RFC #13360](https://github.com/vllm-project/vllm/pull/13360)   |
+| **GPU <> CPU KV Cache Swapping**            | 🚫 Deprecated | No longer needed.                                              | –                                                            |
+| **Embedding Models**                        | 📆 Planning   | `PoolingModelRunner` pending.                                    | –                                                            |
+| **Mamba Models**                            | 📆 Planning   | Selective state-space support planned.                         | –                                                            |
+| **Encoder-Decoder Models**                  | 📆 Planning   | Cross-attention support planned.                               | –                                                            |
+
+<details>
+  <summary><strong>Legend</strong></summary>
+
+- **⚙️ Functional:** Operational; tuning may be required.
+- **🚧 WIP:** Actively under development.
+- **📆 Planning:** Scheduled for future implementation (no active PR).
+- **📝 Planned:** Active planning with an associated PR/RFC.
+- **🚫 Deprecated:** No further development planned.
+  
+</details>
 
 ### Semantic Changes and Deprecated Features
 
@@ -36,7 +64,7 @@ before applying any logits post-processing such as temperature scaling or penalt
 adjustments). As a result, the returned logprobs do not reflect the final adjusted
 probabilities used during sampling.
 
-Support for logprobs with post-sampling adjustments is work in progress and will be added in future updates.
+Support for logprobs with post-sampling adjustments is in progress and will be added in future updates.
 
 **Prompt Logprobs with Prefix Caching**
 
@@ -50,7 +78,8 @@ As part of the major architectural rework in vLLM V1, several legacy features ha
 
 - **best_of**: This feature has been deprecated due to limited usage. See details at [RFC #13361](https://github.com/vllm-project/vllm/issues/13361).
 - **Per-Request Logits Processors**: In V0, users could pass custom
-  processing functions to adjust logits on a per-request basis. In vLLM V1 this feature has been deprecated. Instead, the design is moving toward supporting **global logits
+  processing functions to adjust logits on a per-request basis. In vLLM V1, this
+  feature has been deprecated. Instead, the design is moving toward supporting **global logits
   processors**, a feature the team is actively working on for future releases. See details at [RFC #13360](https://github.com/vllm-project/vllm/pull/13360).
 
 **KV Cache features**
@@ -73,7 +102,8 @@ in progress.
 (e.g., see [PR #13096](https://github.com/vllm-project/vllm/pull/13096)).
 
 - **Spec Decode**: Currently, only ngram-based spec decode is supported in V1. There
-  will be follow-up work to support other types of spec decode (e.g., see [PR #13933](https://github.com/vllm-project/vllm/pull/13933)).
+  will be follow-up work to support other types of spec decode (e.g., see [PR #13933]
+  (https://github.com/vllm-project/vllm/pull/13933)). We will prioritize the support for Eagle, MTP compared to draft model based spec decode.
 
 #### Unsupported Features
 
