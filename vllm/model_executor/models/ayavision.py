@@ -248,7 +248,6 @@ class AyaVisionDummyInputsBuilder(
                                    height=image_size.height,
                                    num_images=num_images)
         }
-        print(image_token * num_images, mm_data)
         return ProcessorInputs(
             prompt_text=image_token * num_images,
             mm_data=mm_data,
