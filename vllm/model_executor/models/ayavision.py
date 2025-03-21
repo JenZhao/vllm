@@ -9,7 +9,7 @@ from transformers.activations import ACT2FN
 from transformers.models.aya_vision import AyaVisionConfig
 from transformers.models.aya_vision.processing_aya_vision import (
     AyaVisionProcessor, AyaVisionProcessorKwargs)
-
+from transformers.models.got_ocr2.image_processing_got_ocr2 import get_optimal_tiled_canvas
 from vllm.config import VllmConfig
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.model_executor.sampling_metadata import SamplingMetadata
@@ -148,7 +148,7 @@ class AyaVisionProcessingInfo(BaseProcessingInfo):
         image_processor = self.get_image_processor()
         height = image_processor.size['height']
         width = image_processor.size['width']
-        max_patches = image_processor.max_patches  # corrected attribute name
+        max_patches = image_processor.max_patches
         return ImageSize(height=height * max_patches, width=width * max_patches)
 
     def _resolve_image_kwargs(
@@ -178,7 +178,7 @@ class AyaVisionProcessingInfo(BaseProcessingInfo):
                         processor: AyaVisionProcessor,
                         image_width: int,
                         image_height: int,
-                        patch_size: dict,
+                        patch_size: int,
                         min_patches: int,
                         max_patches: int,
                         use_thumbnail: bool = True) -> int:
@@ -186,13 +186,8 @@ class AyaVisionProcessingInfo(BaseProcessingInfo):
         reference:
         https://github.com/huggingface/transformers/blob/main/src/transformers/models/ayavision/processing_ayavision.py#L100
         """
-        image_processor: GotOcr2ImageProcessor = processor.image_processor
-
-        patch_size_height, patch_size_width = patch_size["height"], patch_size[
-            "width"]
-
-        num_columns, num_rows = image_processor.get_optimal_tiled_canvas(
-            (image_height, image_width), (patch_size_height, patch_size_width),
+        num_columns, num_rows = get_optimal_tiled_canvas(
+            (image_height, image_width), (patch_size, patch_size),
             min_patches, max_patches)
         num_blocks = num_columns * num_rows
 
@@ -216,17 +211,19 @@ class AyaVisionDummyInputsBuilder(
         image_token = processor.image_token
 
         num_images = mm_counts.get("image", 0)
-
-        target_width, target_height = \
+        print("#######"*10)
+        print(mm_counts)
+        image_size = \
             self.info.get_image_size_with_most_features()
 
         mm_data = {
             "image":
-            self._get_dummy_images(width=target_width,
-                                   height=target_height,
+            self._get_dummy_images(width=image_size.width,
+                                   height=image_size.height,
                                    num_images=num_images)
         }
-
+        print("#######"*10)
+        print(image_token * num_images, mm_data)
         return ProcessorInputs(
             prompt_text=image_token * num_images,
             mm_data=mm_data,
@@ -242,7 +239,9 @@ class AyaVisionMultiModalProcessor(
         hf_processor_mm_kwargs: Mapping[str, object],
     ) -> Mapping[str, MultiModalFieldConfig]:
         pixel_values = hf_inputs.get("pixel_values", torch.empty(0))
-        num_patches = pixel_values.shape[0]
+        num_patches = torch.tensor([pixel_values.shape[0]])
+        print("%%%%%%%%%"*10)
+        print(pixel_values.shape, num_patches)
         return dict(
             pixel_values=MultiModalFieldConfig.flat_from_sizes(
                 "image", num_patches),
@@ -275,12 +274,12 @@ class AyaVisionMultiModalProcessor(
         image_token = hf_processor.image_token
 
         def get_replacement(item_idx: int):
-            images = mm_items.get("image", ImageProcessorItems)
-            image_size = images.get_image_size(item_idx)
+            images:ImageProcessorItems = mm_items.get("image", ImageProcessorItems)
+            image_size:ImageSize = images.get_image_size(item_idx)
             num_patches = self.info.get_num_patches(
-                hf_processor,
-                image_width=image_size["width"],
-                image_height=image_size["height"],
+                processor=hf_processor,
+                image_width=image_size.width,
+                image_height=image_size.height,
                 patch_size=hf_processor.patch_size,
                 min_patches=image_processor.min_patches,
                 max_patches=image_processor.max_patches)
