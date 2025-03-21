@@ -29,7 +29,13 @@ from .utils import (AutoWeightsLoader, init_vllm_registered_model,
                     maybe_prefix, merge_multimodal_embeddings)
 from .vision import get_vision_encoder_info
 from vllm.sequence import IntermediateTensors
-
+from vllm.multimodal.processing import (BaseMultiModalProcessor,
+                                        BaseProcessingInfo, BoundPromptUpdate,
+                                        PlaceholderFeaturesInfo,
+                                        PromptReplacement, PromptTargetMatch,
+                                        PromptUpdate, PromptUpdateDetails,
+                                        encode_tokens, find_mm_placeholders,
+                                        replace_token_matches)
 
 class AyaVisionImagePixelInputs(TypedDict):
     type: Literal["pixel_values"]
@@ -133,13 +139,36 @@ class AyaVisionProcessingInfo(BaseProcessingInfo):
     ) -> Mapping[str, int]:
         return {"image": self.get_max_image_tokens()}
 
+
+    def _prompt_split_image(self, num_patches, processor: AyaVisionProcessor):
+
+        img_patches_per_tile = (processor.img_size // processor.patch_size)**2
+        img_string = f"{processor.start_of_img_token}"
+        if num_patches > 1:
+            for idx in range(1, num_patches):
+                img_string += f"{processor.tile_token}_{idx}" + f"{processor.img_patch_token}" * img_patches_per_tile
+
+        img_string += f"{processor.tile_global_token}" + f"{processor.img_patch_token}" * img_patches_per_tile
+        img_string += f"{processor.end_of_img_token}"
+        return img_string
+
     def get_max_image_tokens(self) -> int:
-        vision_encoder_info: SiglipEncoderInfo = self.get_vision_encoder_info()
-        patch_size: int = vision_encoder_info.get_patch_size()
-        processor: AyaVisionProcessor = self.get_hf_processor()
-        tokenizer = processor.tokenizer
-        image_string = processor._prompt_split_image(patch_size)
-        return len(tokenizer(image_string))
+        hf_processor: AyaVisionProcessor = self.get_hf_processor()
+        image_processor = hf_processor.image_processor
+        tokenizer = hf_processor.tokenizer
+        num_patches = self.get_num_patches(
+            image_width=image_processor.size['width'],
+            image_height=image_processor.size['height'],
+            patch_size=hf_processor.patch_size,
+            min_patches=image_processor.min_patches,
+            max_patches=image_processor.max_patches)
+        image_string = self._prompt_split_image(num_patches, processor=hf_processor)
+        x = encode_tokens(
+            tokenizer,
+            image_string,
+            add_special_tokens=False,
+        )
+        return len(x)
 
     def get_supported_mm_limits(self) -> Mapping[str, Optional[int]]:
         return {"image": None}
@@ -175,7 +204,6 @@ class AyaVisionProcessingInfo(BaseProcessingInfo):
 
     def get_num_patches(self,
                         *,
-                        processor: AyaVisionProcessor,
                         image_width: int,
                         image_height: int,
                         patch_size: int,
@@ -211,8 +239,6 @@ class AyaVisionDummyInputsBuilder(
         image_token = processor.image_token
 
         num_images = mm_counts.get("image", 0)
-        print("#######"*10)
-        print(mm_counts)
         image_size = \
             self.info.get_image_size_with_most_features()
 
@@ -222,7 +248,6 @@ class AyaVisionDummyInputsBuilder(
                                    height=image_size.height,
                                    num_images=num_images)
         }
-        print("#######"*10)
         print(image_token * num_images, mm_data)
         return ProcessorInputs(
             prompt_text=image_token * num_images,
@@ -240,8 +265,6 @@ class AyaVisionMultiModalProcessor(
     ) -> Mapping[str, MultiModalFieldConfig]:
         pixel_values = hf_inputs.get("pixel_values", torch.empty(0))
         num_patches = torch.tensor([pixel_values.shape[0]])
-        print("%%%%%%%%%"*10)
-        print(pixel_values.shape, num_patches)
         return dict(
             pixel_values=MultiModalFieldConfig.flat_from_sizes(
                 "image", num_patches),
@@ -250,18 +273,6 @@ class AyaVisionMultiModalProcessor(
             embed_is_patch=MultiModalFieldConfig.batched("image"),
             image_embeds=MultiModalFieldConfig.batched("image"),
         )
-
-    def _prompt_split_image(self, num_patches, processor: AyaVisionProcessor):
-
-        img_patches_per_tile = (processor.img_size // processor.patch_size)**2
-        img_string = f"{processor.start_of_img_token}"
-        if num_patches > 1:
-            for idx in range(1, num_patches):
-                img_string += f"{processor.tile_token}_{idx}" + f"{processor.img_patch_token}" * img_patches_per_tile
-
-        img_string += f"{processor.tile_global_token}" + f"{processor.img_patch_token}" * img_patches_per_tile
-        img_string += f"{processor.end_of_img_token}"
-        return img_string
 
     def _get_prompt_updates(
         self,
@@ -277,13 +288,12 @@ class AyaVisionMultiModalProcessor(
             images:ImageProcessorItems = mm_items.get("image", ImageProcessorItems)
             image_size:ImageSize = images.get_image_size(item_idx)
             num_patches = self.info.get_num_patches(
-                processor=hf_processor,
                 image_width=image_size.width,
                 image_height=image_size.height,
                 patch_size=hf_processor.patch_size,
                 min_patches=image_processor.min_patches,
                 max_patches=image_processor.max_patches)
-            return self._prompt_split_image(num_patches=num_patches,
+            return self.info._prompt_split_image(num_patches=num_patches,
                                             processor=hf_processor)
 
         return [
@@ -317,8 +327,6 @@ class AyaVisionForConditionalGeneration(nn.Module, SupportsMultiModal):
                                                   prefix, "vision_model"))
         self.vocab_size = config.text_config.vocab_size
         self.multi_modal_projector = AyaVisionMultiModalProjector(config)
-        print("$$$$$$$$$")
-        print(vllm_config.model_config.task)
         self.language_model = init_vllm_registered_model(
             vllm_config=vllm_config,
             hf_config=config.text_config,
@@ -345,7 +353,7 @@ class AyaVisionForConditionalGeneration(nn.Module, SupportsMultiModal):
     def get_multimodal_embeddings(
             self, **kwargs: object) -> Optional[MultiModalEmbeddings]:
         # TODO: Implement this Validate the multimodal input keyword arguments
-        image_input = self._parse_and_validate_image_input(**kwargs)
+        image_input = None
         if image_input is None:
             return None
 
