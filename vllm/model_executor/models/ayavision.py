@@ -145,12 +145,11 @@ class AyaVisionProcessingInfo(BaseProcessingInfo):
         return {"image": None}
 
     def get_image_size_with_most_features(self) -> ImageSize:
-        # image_processor = self.get_image_processor() height =
-        # image_processor.size['height'] width = image_processor.size['width']
-        # max_pathes = image_processor.max_pathes return ImageSize(height=height
-        # * max_pathes, width=width * max_pathes) It is ok to do so since aya
-        # vision model will do resize
-        return ImageSize(height=9999999, width=9999999)
+        image_processor = self.get_image_processor()
+        height = image_processor.size['height']
+        width = image_processor.size['width']
+        max_patches = image_processor.max_patches  # corrected attribute name
+        return ImageSize(height=height * max_patches, width=width * max_patches)
 
     def _resolve_image_kwargs(
         self,
