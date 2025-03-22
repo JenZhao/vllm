@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from typing import (Any, Iterable, Literal, Mapping, Optional, Sequence, Set,
-                    Tuple, TypedDict, Union)
+                    Tuple, TypedDict, Union, cast)
 
 import torch
 from torch import nn
@@ -22,7 +22,7 @@ from vllm.multimodal.processing import (BaseMultiModalProcessor,
                                         MultiModalFieldConfig,
                                         PromptReplacement, PromptUpdate)
 from vllm.multimodal.profiling import BaseDummyInputsBuilder, ProcessorInputs
-
+from vllm.jsontree import json_map_leaves
 from .interfaces import MultiModalEmbeddings, SupportsMultiModal
 from .siglip import SiglipEncoderInfo, SiglipVisionModel
 from .utils import (AutoWeightsLoader, init_vllm_registered_model,
@@ -36,6 +36,12 @@ from vllm.multimodal.processing import (BaseMultiModalProcessor,
                                         PromptUpdate, PromptUpdateDetails,
                                         encode_tokens, find_mm_placeholders,
                                         replace_token_matches)
+from vllm.model_executor.layers.sampler import SamplerOutput, get_sampler
+from functools import cached_property
+from .utils import (AutoWeightsLoader, flatten_bn, init_vllm_registered_model,
+                    maybe_prefix, merge_multimodal_embeddings)
+from vllm.utils import flatten_2d_lists
+from .vision import scatter_patch_features, select_patch_features
 
 class AyaVisionImagePixelInputs(TypedDict):
     type: Literal["pixel_values"]
@@ -59,10 +65,6 @@ class AyaVisionImagePixelInputs(TypedDict):
 
     num_embeds: Union[torch.Tensor, list[torch.Tensor]]
     """Shape: `(batch_size, num_images)`"""
-
-    vision_feature_layer: int
-    vision_feature_select_strategy: str
-
 
 class AyaVisionMultiModalProjector(nn.Module):
 
@@ -303,6 +305,24 @@ class AyaVisionMultiModalProcessor(
             )
         ]
 
+def _get_num_hidden_layers(hf_config: AyaVisionConfig) -> int:
+    feature_layers = hf_config.vision_feature_layer
+    num_hidden_layers = hf_config.vision_config.num_hidden_layers
+    # If we have one feature layer, initialize up to that layer
+    if isinstance(feature_layers, int):
+        return _get_layer_index(feature_layers, num_hidden_layers)
+    # If we have multiple feature layers, initialize up to the deepest one
+    elif isinstance(feature_layers, (list, tuple)):
+        return max(
+            _get_layer_index(idx, num_hidden_layers) for idx in feature_layers)
+    raise TypeError(f"vision_layer_feature type: {type(feature_layers)}"
+                    " is not supported")
+
+def _get_layer_index(feature_layer_index: int, num_hidden_layers: int) -> int:
+    if feature_layer_index < 0:
+        return num_hidden_layers + feature_layer_index + 1
+    return feature_layer_index
+
 
 @MULTIMODAL_REGISTRY.register_processor(
     AyaVisionMultiModalProcessor,
@@ -315,13 +335,14 @@ class AyaVisionForConditionalGeneration(nn.Module, SupportsMultiModal):
         config: AyaVisionConfig = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
         multimodal_config = vllm_config.model_config.multimodal_config
-
+        num_hidden_layers = _get_num_hidden_layers(config)
         self.config = config
         self.quant_config = quant_config
         self.multimodal_config = multimodal_config
 
         self.vision_tower = SiglipVisionModel(config.vision_config,
                                               quant_config,
+                                              num_hidden_layers_override=num_hidden_layers,
                                               prefix=maybe_prefix(
                                                   prefix, "vision_model"))
         self.vocab_size = config.text_config.vocab_size
@@ -342,30 +363,107 @@ class AyaVisionForConditionalGeneration(nn.Module, SupportsMultiModal):
                            if self.config.tie_word_embeddings else None))
         return loader.load_weights(weights)
 
+    def _image_pixels_to_features(
+        self,
+        vision_tower: SiglipVisionModel,
+        pixel_values: torch.Tensor,
+        **kwargs
+    ) -> torch.Tensor:
+        target_dtype = vision_tower.get_input_embeddings().weight.dtype
+        image_features = vision_tower(pixel_values.to(dtype=target_dtype), **kwargs)
+        def select_features(leaf: torch.Tensor):
+            return self._select_image_features(
+                leaf,
+                strategy=self.config.vision_feature_select_strategy,
+            )
+        return cast(
+                    Union[torch.Tensor, tuple[torch.Tensor, ...]],
+                    json_map_leaves(select_features, image_features),
+                )
+
+    def _select_image_features(self, image_features: torch.Tensor, *,
+                               strategy: str) -> torch.Tensor:
+        if strategy == "default":
+            return image_features[:, 1:]
+        elif strategy == "full":
+            return image_features
+
+        raise ValueError(f"Unexpected select feature strategy: {strategy}")
+
+
     def _process_image_input(
-            self, image_input: AyaVisionImagePixelInputs) -> torch.Tensor:
-        # TODO: Implement this
-        assert self.vision_encoder is not None
-        image_features = self.vision_encoder(image_input)
-        return self.multi_modal_projector(image_features)
+            self, image_input: AyaVisionImagePixelInputs, **kwargs) -> tuple[torch.Tensor, ...]:
+        assert self.vision_tower is not None
+        pixel_values = image_input["pixel_values"]
+        num_patches = image_input["num_patches"]
+
+        image_features = self._image_pixels_to_features(
+            self.vision_tower,
+            pixel_values = pixel_values
+        )
+        image_embeds = self.multi_modal_projector(image_features)
+        return image_embeds.split(num_patches.tolist())
+
+    def _validate_pixel_values(self, data: torch.Tensor) -> torch.Tensor:
+        h = w = self.config.vision_config.image_size
+        expected_dims = (3, h, w)
+
+        def _validate_shape(d: torch.Tensor):
+            if d.shape != expected_dims:
+                raise ValueError(
+                    "The expected shape of pixel values per image per batch "
+                    f"is {expected_dims}. You supplied {tuple(d.shape)}.")
+
+        for d in data:
+            _validate_shape(d)
+
+        return data
+
+
+    def _parse_and_validate_image_input(
+            self, **kwargs: object) -> Optional[AyaVisionImagePixelInputs]:
+        pixel_values: torch.Tensor = kwargs.pop("pixel_values", None)
+        if pixel_values is None:
+            return None
+
+        if not isinstance(pixel_values, (torch.Tensor, list)):
+            raise ValueError("Incorrect type of pixel values. "
+                             f"Got type: {type(pixel_values)}")
+        num_patches = pixel_values.shape[1]
+        if pixel_values.ndim == 5:
+            batch_size = pixel_values.shape[0]
+            num_patches = pixel_values.shape[1]
+            embed_is_patch = torch.full((batch_size,), True, dtype=torch.bool, device=pixel_values.device)
+            num_embeds = torch.full((batch_size,), num_patches, dtype=torch.int, device=pixel_values.device)
+            num_patches = torch.full((batch_size,), num_patches, dtype=torch.int, device=pixel_values.device)
+
+        else:
+            raise ValueError(f"pixel_values is incorrect {pixel_values.shape}")
+        pixel_values = flatten_bn(pixel_values, concat=True)
+
+        return AyaVisionImagePixelInputs(
+            type="pixel_values",
+            pixel_values=self._validate_pixel_values(pixel_values),
+            num_patches=num_patches,
+            embed_is_patch=embed_is_patch,
+            num_embeds=num_embeds,
+        )
 
     def get_multimodal_embeddings(
             self, **kwargs: object) -> Optional[MultiModalEmbeddings]:
-        # TODO: Implement this Validate the multimodal input keyword arguments
-        image_input = None
+        image_input = self._parse_and_validate_image_input(**kwargs)
         if image_input is None:
             return None
-
-        # Run multimodal inputs through encoder and projector
-        vision_embeddings = self._process_image_input(image_input)
-        return vision_embeddings
+        image_features = self._process_image_input(image_input, **kwargs)
+        if kwargs.get("v0_path", False):
+            return image_features
+        return image_features
 
     def get_input_embeddings(
         self,
         input_ids: torch.Tensor,
         multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
     ) -> torch.Tensor:
-        # TODO: Implement this
         inputs_embeds = self.language_model.get_input_embeddings(input_ids)
 
         if multimodal_embeddings is not None:
@@ -387,8 +485,14 @@ class AyaVisionForConditionalGeneration(nn.Module, SupportsMultiModal):
     ) -> Union[torch.Tensor, IntermediateTensors]:
         if intermediate_tensors is not None:
             inputs_embeds = None
-       # TODO: Implement this
-        inputs_embeds = None
+        if (input_ids is None) ^ (inputs_embeds is not None):
+            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+        if input_ids is not None:
+            special_image_mask = (input_ids == self.config.image_token_index).unsqueeze(-1)
+            special_image_mask = special_image_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
+        else:
+            special_image_mask = torch.zeros_like(inputs_embeds, dtype=torch.bool).to(inputs_embeds.device)
+        
         hidden_states = self.language_model.model(
             input_ids=input_ids,
             positions=positions,
@@ -405,6 +509,13 @@ class AyaVisionForConditionalGeneration(nn.Module, SupportsMultiModal):
     ) -> Optional[torch.Tensor]:
         return self.language_model.compute_logits(hidden_states,
                                                   sampling_metadata)
+
+    @cached_property
+    def sampler(self):
+        if hasattr(self.language_model, "sampler"):
+            return self.language_model.sampler
+
+        return get_sampler()
 
     def sample(
         self,
