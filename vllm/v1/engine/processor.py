@@ -256,7 +256,8 @@ class Processor:
                         mm_input.modalities)[0]])
             else:
                 sorted_mm_inputs = individual_mm_inputs
-
+        print("sorted_mm_positions | "*10)
+        print(sorted_mm_positions)
         return EngineCoreRequest(
             request_id=request_id,
             prompt=decoder_inputs.prompt,

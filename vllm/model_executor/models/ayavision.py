@@ -396,7 +396,8 @@ class AyaVisionForConditionalGeneration(nn.Module, SupportsMultiModal):
         assert self.vision_tower is not None
         pixel_values = image_input["pixel_values"]
         num_patches = image_input["num_patches"]
-
+        print("_process_image_input | "*5)
+        print(num_patches.tolist())
         image_features = self._image_pixels_to_features(
             self.vision_tower,
             pixel_values = pixel_values
@@ -464,6 +465,8 @@ class AyaVisionForConditionalGeneration(nn.Module, SupportsMultiModal):
         input_ids: torch.Tensor,
         multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
     ) -> torch.Tensor:
+        print("get_input_embeddings | "*4)
+        print((input_ids == 255036).sum().item())
         inputs_embeds = self.language_model.get_input_embeddings(input_ids)
 
         if multimodal_embeddings is not None:
