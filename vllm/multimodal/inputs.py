@@ -142,8 +142,8 @@ class PlaceholderRange:
         embed_info = None
         if self.is_embed is not None:
             embed_info = (self.is_embed.shape, self.is_embed.sum().item())
-        return f"PlaceholderRange(offset={self.offset}, \
-            length={self.length}, is_embed={embed_info})"
+        return f"PlaceholderRange(offset={self.offset}," \
+               f"length={self.length}, is_embed={embed_info})"
 
     def get_num_embeds(self) -> int:
         if self.is_embed is None:
