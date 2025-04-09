@@ -152,6 +152,8 @@ class Scheduler(SchedulerInterface):
         # First, schedule the RUNNING requests.
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
+            logger.info("Scheduling request %s: %s", req_index,
+                        self.running[req_index].request_id)
             request = self.running[req_index]
             if request.request_id in self.scheduled_req_ids:
                 # This request has already been scheduled.

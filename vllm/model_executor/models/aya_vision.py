@@ -17,6 +17,7 @@ from transformers.models.got_ocr2.image_processing_got_ocr2 import (
 
 from vllm.config import VllmConfig
 from vllm.jsontree import json_map_leaves
+from vllm.logger import init_logger
 from vllm.model_executor.layers.sampler import SamplerOutput, get_sampler
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.multimodal import MULTIMODAL_REGISTRY
@@ -35,6 +36,8 @@ from .interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsPP
 from .siglip import SiglipVisionModel
 from .utils import (AutoWeightsLoader, flatten_bn, init_vllm_registered_model,
                     maybe_prefix, merge_multimodal_embeddings)
+
+logger = init_logger(__name__)
 
 
 class AyaVisionImagePixelInputs(TypedDict):
@@ -438,14 +441,17 @@ class AyaVisionForConditionalGeneration(nn.Module, SupportsMultiModal,
         multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
     ) -> torch.Tensor:
         inputs_embeds = self.language_model.get_input_embeddings(input_ids)
+        logger.info("Inputs embeds: %s", inputs_embeds.shape)
         if multimodal_embeddings is not None:
+            logger.info("Merging multimodal embeddings for input_ids: %s",
+                        input_ids.shape)
             inputs_embeds = merge_multimodal_embeddings(
                 input_ids=input_ids,
                 inputs_embeds=inputs_embeds,
                 multimodal_embeddings=multimodal_embeddings,
                 placeholder_token_id=self.config.image_token_index,
             )
-
+            logger.info("Merged embeddings: %s", inputs_embeds.shape)
         return inputs_embeds
 
     def forward(

@@ -841,6 +841,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         mm_inputs = list[MultiModalKwargs]()
         req_ids_pos = list[tuple[str, int, PlaceholderRange]]()
         for req_id, encoder_input_ids in scheduled_encoder_inputs.items():
+            logger.info("Processing request %s with %s encoder inputs", req_id,
+                        len(encoder_input_ids))
             req_state = self.requests[req_id]
 
             for mm_input_id in encoder_input_ids:
@@ -882,6 +884,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 encoder_outputs.append(output)
 
         # Cache the encoder outputs.
+        assert len(req_ids_pos) == len(encoder_outputs), (
+            f"len(req_ids_pos): {len(req_ids_pos)}, "
+            f"len(encoder_outputs): {len(encoder_outputs)}")
         for (req_id, input_id, pos_info), output in zip(
                 req_ids_pos,
                 encoder_outputs,
@@ -900,6 +905,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
     ) -> list[torch.Tensor]:
         mm_embeds: list[torch.Tensor] = []
         for req_id in self.input_batch.req_ids:
+            logger.info("Gathering mm embeddings for request %s", req_id)
             num_scheduled_tokens = scheduler_output.num_scheduled_tokens[
                 req_id]
             req_state = self.requests[req_id]
@@ -1029,6 +1035,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # as input to the multimodal model, even when the input is text.
             input_ids = self.input_ids[:num_scheduled_tokens]
             if mm_embeds:
+                logger.info(
+                    "Getting input embeddings for input_ids: %s "
+                    "with mm_embeds: %s", input_ids.shape, mm_embeds)
                 inputs_embeds = self.model.get_input_embeddings(
                     input_ids, mm_embeds)
             else:

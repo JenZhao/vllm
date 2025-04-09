@@ -3,6 +3,10 @@ from typing import Optional
 
 import torch
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 
 def sanity_check_mm_encoder_outputs(
     mm_embeddings: object,
@@ -70,5 +74,6 @@ def gather_mm_placeholders(
     """
     if is_embed is None:
         return placeholders
-
+    logger.info("Gathering mm placeholders: %s %s", placeholders.shape,
+                is_embed.shape)
     return placeholders[is_embed]

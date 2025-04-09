@@ -341,8 +341,10 @@ def _flatten_embeddings(embeddings: NestedTensors) -> torch.Tensor:
 
     if isinstance(embeddings, torch.Tensor):
         # Flatten all but the last dimension.
+        logger.info("Flattening embeddings: %s", embeddings.shape)
         return embeddings.flatten(0, -2)
-
+    logger.info("Flattening embeddings: %s %s", len(embeddings),
+                embeddings[0].shape)
     return torch.cat(tuple(_flatten_embeddings(t) for t in embeddings))
 
 
@@ -389,9 +391,11 @@ def _merge_multimodal_embeddings(
         This updates ``inputs_embeds`` in place.
     """
     num_expected_tokens = is_multimodal.sum().item()
+    logger.info("num_expected_tokens: %s", num_expected_tokens)
     assert isinstance(num_expected_tokens, int)
 
     flattened = _flatten_embeddings(multimodal_embeddings)
+    logger.info("Flattened embeddings: %s", flattened.shape)
     if flattened.shape[0] != num_expected_tokens:
         expr = _embedding_count_expression(multimodal_embeddings)
         raise ValueError(
