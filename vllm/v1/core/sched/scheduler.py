@@ -152,8 +152,6 @@ class Scheduler(SchedulerInterface):
         # First, schedule the RUNNING requests.
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
-            logger.info("Scheduling request %s: %s", req_index,
-                        self.running[req_index].request_id)
             request = self.running[req_index]
             if request.request_id in self.scheduled_req_ids:
                 # This request has already been scheduled.
@@ -171,6 +169,8 @@ class Scheduler(SchedulerInterface):
 
             # Schedule encoder inputs.
             if request.has_encoder_inputs:
+                logger.info("Scheduling request with encoder inputs %s: %s",
+                            req_index, self.running[req_index].request_id)
                 (encoder_inputs_to_schedule, num_new_tokens,
                  new_encoder_budget) = self._try_schedule_encoder_inputs(
                      request, request.num_computed_tokens, num_new_tokens,

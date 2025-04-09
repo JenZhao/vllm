@@ -443,8 +443,8 @@ class AyaVisionForConditionalGeneration(nn.Module, SupportsMultiModal,
         multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
     ) -> torch.Tensor:
         inputs_embeds = self.language_model.get_input_embeddings(input_ids)
-        logger.info("Inputs embeds: %s", inputs_embeds.shape)
         if multimodal_embeddings is not None:
+            logger.info("Inputs embeds: %s", inputs_embeds.shape)
             logger.info("Merging multimodal embeddings for input_ids: %s",
                         input_ids.shape)
             inputs_embeds = merge_multimodal_embeddings(

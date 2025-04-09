@@ -904,10 +904,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         scheduler_output: "SchedulerOutput",
     ) -> list[torch.Tensor]:
         mm_embeds: list[torch.Tensor] = []
-        logger.info("Gathering mm embeddings for %s requests",
-                    str(self.input_batch.req_ids))
         for req_id in self.input_batch.req_ids:
-            logger.info("Gathering mm embeddings for request %s", req_id)
             num_scheduled_tokens = scheduler_output.num_scheduled_tokens[
                 req_id]
             req_state = self.requests[req_id]
@@ -1037,12 +1034,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # as input to the multimodal model, even when the input is text.
             input_ids = self.input_ids[:num_scheduled_tokens]
             if mm_embeds:
-                logger.info(
-                    "Getting input embeddings for input_ids: %s "
-                    "with mm_embeds: %s %s", input_ids.shape, len(mm_embeds),
-                    mm_embeds[0].shape)
                 inputs_embeds = self.model.get_input_embeddings(
                     input_ids, mm_embeds)
+            else:
+                inputs_embeds = self.model.get_input_embeddings(input_ids)
+            # TODO(woosuk): Avoid the copy. Optimize.
+            self.inputs_embeds[:num_scheduled_tokens].copy_(inputs_embeds)
+            inputs_embeds = self.inputs_embeds[:num_input_tokens]
+            input_ids = None
         else:
             # For text-only models, we use token ids as input.
             # While it is possible to use embeddings as input just like the
