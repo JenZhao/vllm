@@ -904,6 +904,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         scheduler_output: "SchedulerOutput",
     ) -> list[torch.Tensor]:
         mm_embeds: list[torch.Tensor] = []
+        logger.info("Gathering mm embeddings for %s requests",
+                    str(self.input_batch.req_ids))
         for req_id in self.input_batch.req_ids:
             logger.info("Gathering mm embeddings for request %s", req_id)
             num_scheduled_tokens = scheduler_output.num_scheduled_tokens[
