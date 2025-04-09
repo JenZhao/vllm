@@ -1037,7 +1037,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if mm_embeds:
                 logger.info(
                     "Getting input embeddings for input_ids: %s "
-                    "with mm_embeds: %s", input_ids.shape, mm_embeds)
+                    "with mm_embeds: %s %s", input_ids.shape, len(mm_embeds),
+                    mm_embeds[0].shape)
                 inputs_embeds = self.model.get_input_embeddings(
                     input_ids, mm_embeds)
             else:

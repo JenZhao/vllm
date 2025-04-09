@@ -59,6 +59,9 @@ def scatter_mm_placeholders(
         (is_embed.shape[0], embeds.shape[-1]),
         fill_value=torch.nan,
     )
+    logger.info("Scattering mm placeholders: %s,  embeds: %s",
+                placeholders.shape, embeds.shape)
+    logger.info("is_embed: %s", is_embed.shape)
     placeholders[is_embed] = embeds
     return placeholders
 
