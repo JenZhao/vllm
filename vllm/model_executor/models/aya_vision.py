@@ -277,7 +277,9 @@ class AyaVisionMultiModalProcessor(
                 max_patches=image_processor.max_patches,
             )
             repl = hf_processor._prompt_split_image(num_patches=num_patches)
-
+            # img_patch_token is the token that represents the image patch
+            # in the prompt. PromptUpdateDetails now has the full sequence repl
+            # and is_embed for the image patch.
             return PromptUpdateDetails.select_text(repl, img_patch_token)
 
         return [

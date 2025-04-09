@@ -899,6 +899,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 is_embed=pos_info.is_embed,
             )
 
+    def _gather_mm_positions(self, ) -> list[torch.Tensor]:
+        all_mm_positions = []
+        for req_id in self.input_batch.req_ids:
+            logger.info("Gathering mm embeddings for request %s", req_id)
+            req_state = self.requests[req_id]
+            mm_positions = req_state.mm_positions
+            all_mm_positions.append(mm_positions)
+        return all_mm_positions
+
     def _gather_mm_embeddings(
         self,
         scheduler_output: "SchedulerOutput",
@@ -939,6 +948,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 encoder_output = self.encoder_cache[req_id][i]
 
                 if (is_embed := pos_info.is_embed) is not None:
+                    logger.info(is_embed.shape)
+                    logger.info(is_embed.sum().item())
+                    logger.info(start_idx)
+                    logger.info(end_idx)
                     is_embed = is_embed[start_idx:end_idx]
 
                 mm_embeds_item = gather_mm_placeholders(
@@ -1012,9 +1025,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if self.is_multimodal_model:
             # Run the multimodal encoder if any.
             self._execute_mm_encoder(scheduler_output)
-            mm_embeds = self._gather_mm_embeddings(scheduler_output)
+            mm_positions = self._gather_mm_positions()
         else:
-            mm_embeds = []
+            mm_positions = []
 
         # Prepare the decoder inputs.
         attn_metadata, logits_indices, spec_decode_metadata = (
@@ -1036,13 +1049,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # embeddings), we always use embeddings (rather than token ids)
             # as input to the multimodal model, even when the input is text.
             input_ids = self.input_ids[:num_scheduled_tokens]
-            if mm_embeds:
+            if mm_positions:
                 logger.info(
                     "Getting input embeddings for input_ids: %s "
-                    "with mm_embeds: %s %s", input_ids.shape, len(mm_embeds),
-                    mm_embeds[0].shape)
-                inputs_embeds = self.model.get_input_embeddings(
-                    input_ids, mm_embeds)
+                    "with mm_positions: %s %s", input_ids.shape,
+                    len(mm_positions), mm_positions[0].shape)
+                inputs_embeds = self.model.language_model.get_input_embeddings(
+                    input_ids)
+                logger.info("Inputs embeds: %s", inputs_embeds.shape)
+
             else:
                 inputs_embeds = self.model.get_input_embeddings(input_ids)
             # TODO(woosuk): Avoid the copy. Optimize.
