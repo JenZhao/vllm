@@ -156,7 +156,7 @@ def calculate_metrics(
         if outputs[i].success:
             output_len = outputs[i].output_tokens
 
-            if output_len is None:
+            if not output_len:
                 # We use the tokenizer to count the number of output tokens
                 # for some serving backends instead of looking at
                 # len(outputs[i].itl) since multiple output tokens may be
@@ -921,7 +921,7 @@ if __name__ == "__main__":
         "--percentile-metrics",
         type=str,
         default="ttft,tpot,itl",
-        help="Comma-seperated list of selected metrics to report percentils. "
+        help="Comma-separated list of selected metrics to report percentils. "
         "This argument specifies the metrics to report percentiles. "
         "Allowed metric names are \"ttft\", \"tpot\", \"itl\", \"e2el\". "
         "Default value is \"ttft,tpot,itl\".")
@@ -929,7 +929,7 @@ if __name__ == "__main__":
         "--metric-percentiles",
         type=str,
         default="99",
-        help="Comma-seperated list of percentiles for selected metrics. "
+        help="Comma-separated list of percentiles for selected metrics. "
         "To report 25-th, 50-th, and 75-th percentiles, use \"25,50,75\". "
         "Default value is \"99\". "
         "Use \"--percentile-metrics\" to select metrics.",
